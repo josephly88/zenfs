@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -51,7 +52,9 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
       busy_(false),
       start_(zbd_zone_start(z)),
       max_capacity_(zbd_zone_capacity(z)),
-      wp_(zbd_zone_wp(z)) {
+      wp_(zbd_zone_wp(z)),
+      is_blob_zone_(false),
+      blob_ybiz_(0) {
   lifetime_ = Env::WLTH_NOT_SET;
   used_capacity_ = 0;
   capacity_ = 0;
@@ -100,6 +103,7 @@ IOStatus Zone::Reset() {
 
   wp_ = start_;
   lifetime_ = Env::WLTH_NOT_SET;
+  ClearBlobYBIZ();
 
   return IOStatus::OK();
 }
@@ -189,7 +193,10 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname,
       write_f_(-1),
       logger_(logger),
       metrics_(metrics) {
-  Info(logger_, "New Zoned Block Device: %s", filename_.c_str());
+  const char *baza = getenv("ZENFS_BAZA");
+  baza_enabled_ = (baza != nullptr && baza[0] == '1' && baza[1] == '\0');
+  Info(logger_, "New Zoned Block Device: %s BAZA: %d", filename_.c_str(),
+       baza_enabled_ ? 1 : 0);
 }
 
 std::string ZonedBlockDevice::ErrorToString(int err) {
@@ -677,7 +684,7 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
 
   for (const auto z : io_zones) {
     if (z->Acquire()) {
-      if ((z->used_capacity_ > 0) && !z->IsFull() &&
+      if ((z->used_capacity_ > 0) && !z->IsFull() && !z->IsBlobZone() &&
           z->capacity_ >= min_capacity) {
         unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
         if (diff <= best_diff) {
@@ -723,6 +730,103 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
     }
   }
   *zone_out = allocated_zone;
+  return IOStatus::OK();
+}
+
+IOStatus ZonedBlockDevice::GetBestOpenBlobZone(Zone **zone_out,
+                                               uint32_t min_capacity) {
+  Zone *allocated_zone = nullptr;
+  IOStatus s;
+
+  for (const auto z : io_zones) {
+    if (z->Acquire()) {
+      if (z->IsBlobZone() && !z->IsFull() && z->used_capacity_ > 0 &&
+          z->capacity_ >= min_capacity) {
+        allocated_zone = z;
+        break;
+      } else {
+        s = z->CheckRelease();
+        if (!s.ok()) return s;
+      }
+    }
+  }
+
+  *zone_out = allocated_zone;
+  return IOStatus::OK();
+}
+
+IOStatus ZonedBlockDevice::GetMinFullBlobYBIZ(uint64_t *min_ybiz) {
+  uint64_t min = std::numeric_limits<uint64_t>::max();
+  for (const auto z : io_zones) {
+    if (z->IsBlobZone() && z->IsFull() && z->GetBlobYBIZ() != 0) {
+      if (z->GetBlobYBIZ() < min) min = z->GetBlobYBIZ();
+    }
+  }
+  if (min == std::numeric_limits<uint64_t>::max()) {
+    return IOStatus::NotSupported("No full blob zone with YBIZ");
+  }
+  *min_ybiz = min;
+  return IOStatus::OK();
+}
+
+IOStatus ZonedBlockDevice::AllocateBlobIOZone(Zone **out_zone) {
+  Zone *allocated_zone = nullptr;
+  int new_zone = 0;
+  IOStatus s;
+
+  s = GetZoneDeferredStatus();
+  if (!s.ok()) {
+    return s;
+  }
+
+  s = ApplyFinishThreshold();
+  if (!s.ok()) {
+    return s;
+  }
+
+  WaitForOpenIOZoneToken(false);
+
+  s = GetBestOpenBlobZone(&allocated_zone);
+  if (!s.ok()) {
+    PutOpenIOZoneToken();
+    return s;
+  }
+
+  if (allocated_zone == nullptr) {
+    bool got_token = GetActiveIOZoneTokenIfAvailable();
+    while (!got_token && !GetActiveIOZoneTokenIfAvailable()) {
+      s = FinishCheapestIOZone();
+      if (!s.ok()) {
+        PutOpenIOZoneToken();
+        return s;
+      }
+    }
+
+    s = AllocateEmptyZone(&allocated_zone);
+    if (!s.ok()) {
+      PutActiveIOZoneToken();
+      PutOpenIOZoneToken();
+      return s;
+    }
+
+    if (allocated_zone != nullptr) {
+      allocated_zone->SetBlobZone(true);
+      allocated_zone->lifetime_ = Env::WLTH_EXTREME;
+      new_zone = 1;
+    } else {
+      PutActiveIOZoneToken();
+    }
+  }
+
+  if (allocated_zone) {
+    Debug(logger_,
+          "BAZA allocating blob zone(new=%d) start: 0x%lx wp: 0x%lx\n",
+          new_zone, allocated_zone->start_, allocated_zone->wp_);
+  } else {
+    PutOpenIOZoneToken();
+  }
+
+  *out_zone = allocated_zone;
   return IOStatus::OK();
 }
 
@@ -777,6 +881,23 @@ IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
       GetBestOpenZoneMatch(file_lifetime, &best_diff, out_zone, min_capacity);
   if (s.ok() && (*out_zone) != nullptr) {
     Info(logger_, "TakeMigrateZone: %lu", (*out_zone)->start_);
+  } else {
+    migrating_ = false;
+  }
+
+  return s;
+}
+
+IOStatus ZonedBlockDevice::TakeMigrateBlobZone(Zone **out_zone,
+                                               uint32_t min_capacity) {
+  std::unique_lock<std::mutex> lock(migrate_zone_mtx_);
+  migrate_resource_.wait(lock, [this] { return !migrating_; });
+
+  migrating_ = true;
+
+  auto s = GetBestOpenBlobZone(out_zone, min_capacity);
+  if (s.ok() && (*out_zone) != nullptr) {
+    Info(logger_, "TakeMigrateBlobZone: %lu", (*out_zone)->start_);
   } else {
     migrating_ = false;
   }

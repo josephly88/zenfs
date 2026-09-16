@@ -15,6 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <set>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -25,6 +26,8 @@
 #include "util/crc32c.h"
 
 #define DEFAULT_ZENV_LOG_PATH "/tmp/"
+#define GC_START_LEVEL 20
+#define GC_SLOPE 3
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -250,8 +253,15 @@ ZenFS::ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs,
 ZenFS::~ZenFS() {
   Status s;
   Info(logger_, "ZenFS shutting down");
+  if (gc_worker_) {
+    run_gc_worker_ = false;
+    gc_worker_->join();
+    gc_worker_.reset();
+  }
   zbd_->LogZoneUsage();
   LogFiles();
+  Info(logger_, "ZCcopy blob bytes: %lu",
+       (unsigned long)zbd_->GetBlobZcCopyBytes());
 
   meta_log_.reset(nullptr);
   ClearFiles();
@@ -1420,6 +1430,15 @@ Status ZenFS::Mount(bool readonly) {
     IOStatus status = zbd_->ResetUnusedIOZones();
     if (!status.ok()) return status;
     Info(logger_, "  Done");
+
+    const char* gc_env = getenv("ZENFS_ENABLE_GC");
+    bool enable_gc = !(gc_env != nullptr && gc_env[0] == '0' && gc_env[1] == '\0');
+    if (enable_gc) {
+      Info(logger_, "Starting garbage collection worker (free-space trigger %d%%)",
+           GC_START_LEVEL);
+      run_gc_worker_ = true;
+      gc_worker_.reset(new std::thread(&ZenFS::GCWorker, this));
+    }
   }
 
   LogFiles();
@@ -1643,6 +1662,69 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
   }
 }
 
+void ZenFS::GCWorker() {
+  while (run_gc_worker_) {
+    usleep(1000 * 1000 * 10);
+
+    if (!run_gc_worker_) break;
+
+    uint64_t non_free = zbd_->GetUsedSpace() + zbd_->GetReclaimableSpace();
+    uint64_t free = zbd_->GetFreeSpace();
+    uint64_t total = free + non_free;
+    if (total == 0) continue;
+
+    uint64_t free_percent = (100 * free) / total;
+    if (free_percent > GC_START_LEVEL) continue;
+
+    ZenFSSnapshot snapshot;
+    ZenFSSnapshotOptions options;
+    options.zone_ = 1;
+    options.zone_file_ = 1;
+    options.log_garbage_ = 0;
+    GetZenFSSnapshot(snapshot, options);
+
+    uint64_t threshold =
+        (100 - GC_SLOPE * (GC_START_LEVEL - free_percent));
+    std::set<uint64_t> migrate_zones_start;
+    for (const auto& zone : snapshot.zones_) {
+      if (zone.capacity == 0 && zone.max_capacity > 0) {
+        uint64_t garbage_percent_approx =
+            100 - 100 * zone.used_capacity / zone.max_capacity;
+        if (garbage_percent_approx > threshold &&
+            garbage_percent_approx < 100) {
+          migrate_zones_start.emplace(zone.start);
+        }
+      }
+    }
+
+    std::vector<ZoneExtentSnapshot*> migrate_exts;
+    for (auto& ext : snapshot.extents_) {
+      if (migrate_zones_start.find(ext.zone_start) !=
+          migrate_zones_start.end()) {
+        migrate_exts.push_back(&ext);
+      }
+    }
+
+    if (migrate_exts.size() > 0) {
+      Info(logger_,
+           "GCWorker: free_percent=%lu threshold=%lu migrating %d extents "
+           "ZCcopy_so_far=%lu\n",
+           (unsigned long)free_percent, (unsigned long)threshold,
+           (int)migrate_exts.size(),
+           (unsigned long)zbd_->GetBlobZcCopyBytes());
+      IOStatus s = MigrateExtents(migrate_exts);
+      if (!s.ok()) {
+        Error(logger_, "Garbage collection failed: %s", s.ToString().c_str());
+      }
+    }
+
+    IOStatus rs = zbd_->ResetUnusedIOZones();
+    if (!rs.ok()) {
+      Error(logger_, "ResetUnusedIOZones failed: %s", rs.ToString().c_str());
+    }
+  }
+}
+
 IOStatus ZenFS::MigrateExtents(
     const std::vector<ZoneExtentSnapshot*>& extents) {
   IOStatus s;
@@ -1650,8 +1732,7 @@ IOStatus ZenFS::MigrateExtents(
   std::map<std::string, std::vector<ZoneExtentSnapshot*>> file_extents;
   for (auto* ext : extents) {
     std::string fname = ext->filename;
-    // We only migrate SST file extents
-    if (ends_with(fname, ".sst")) {
+    if (ends_with(fname, ".sst") || ends_with(fname, ".blob")) {
       file_extents[fname].emplace_back(ext);
     }
   }
@@ -1701,9 +1782,12 @@ IOStatus ZenFS::MigrateFileExtents(
 
     Zone* target_zone = nullptr;
 
-    // Allocate a new migration zone.
-    s = zbd_->TakeMigrateZone(&target_zone, zfile->GetWriteLifeTimeHint(),
-                              ext->length_);
+    if (ends_with(fname, ".blob") && zbd_->IsBazaEnabled()) {
+      s = zbd_->TakeMigrateBlobZone(&target_zone, ext->length_);
+    } else {
+      s = zbd_->TakeMigrateZone(&target_zone, zfile->GetWriteLifeTimeHint(),
+                                ext->length_);
+    }
     if (!s.ok()) {
       continue;
     }
@@ -1736,6 +1820,10 @@ IOStatus ZenFS::MigrateFileExtents(
     ext->start_ = target_start;
     ext->zone_ = target_zone;
     ext->zone_->used_capacity_ += ext->length_;
+
+    if (ends_with(fname, ".blob")) {
+      zbd_->AddBlobZcCopyBytes(ext->length_);
+    }
 
     zbd_->ReleaseMigrateZone(target_zone);
   }

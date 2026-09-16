@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <memory>
+#include <thread>
 
 #include "io_zenfs.h"
 #include "metrics.h"
@@ -131,6 +133,8 @@ class ZenFS : public FileSystemWrapper {
   std::unique_ptr<ZenMetaLog> meta_log_;
   std::mutex metadata_sync_mtx_;
   std::unique_ptr<Superblock> superblock_;
+  std::atomic<bool> run_gc_worker_{false};
+  std::unique_ptr<std::thread> gc_worker_;
 
   std::shared_ptr<Logger> GetLogger() { return logger_; }
 
@@ -440,6 +444,16 @@ class ZenFS : public FileSystemWrapper {
   IOStatus MigrateFileExtents(
       const std::string& fname,
       const std::vector<ZoneExtentSnapshot*>& migrate_exts);
+
+  void GCWorker();
+
+  IOStatus GetMinFullBlobYBIZ(uint64_t* min_ybiz) override {
+    return zbd_->GetMinFullBlobYBIZ(min_ybiz);
+  }
+
+  uint64_t GetBlobZcCopyBytes() const override {
+    return zbd_->GetBlobZcCopyBytes();
+  }
 };
 #endif  // !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 

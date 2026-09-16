@@ -111,6 +111,8 @@ class ZoneFile {
   ZoneExtent* GetExtent(uint64_t file_offset, uint64_t* dev_offset);
   void PushExtent();
   IOStatus AllocateNewZone();
+  bool IsBlobFile();
+  uint64_t ParseBlobFileNumber();
 
   void EncodeTo(std::string* output, uint32_t extent_start);
   void EncodeUpdateTo(std::string* output) {

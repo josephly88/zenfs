@@ -8,6 +8,7 @@
 
 #include "io_zenfs.h"
 
+#include <algorithm>
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -443,19 +444,44 @@ void ZoneFile::PushExtent() {
 
 IOStatus ZoneFile::AllocateNewZone() {
   Zone* zone;
-  IOStatus s = zbd_->AllocateIOZone(lifetime_, io_type_, &zone);
+  IOStatus s;
+  if (zbd_->IsBazaEnabled() && IsBlobFile()) {
+    s = zbd_->AllocateBlobIOZone(&zone);
+  } else {
+    s = zbd_->AllocateIOZone(lifetime_, io_type_, &zone);
+  }
 
   if (!s.ok()) return s;
   if (!zone) {
     return IOStatus::NoSpace("Zone allocation failure\n");
+  }
+  if (zbd_->IsBazaEnabled() && IsBlobFile()) {
+    zone->NoteBlobFile(ParseBlobFileNumber());
   }
   SetActiveZone(zone);
   extent_start_ = active_zone_->wp_;
   extent_filepos_ = file_size_;
 
   /* Persist metadata so we can recover the active extent using
-     the zone write pointer in case there is a crash before syncing */
+   * the zone write pointer in case there is a crash before syncing */
   return PersistMetadata();
+}
+
+bool ZoneFile::IsBlobFile() {
+  if (linkfiles_.empty()) return false;
+  const std::string& name = GetFilename();
+  const std::string ending = ".blob";
+  if (ending.size() > name.size()) return false;
+  return std::equal(ending.rbegin(), ending.rend(), name.rbegin());
+}
+
+uint64_t ZoneFile::ParseBlobFileNumber() {
+  if (linkfiles_.empty()) return 0;
+  const std::string& name = GetFilename();
+  size_t slash = name.find_last_of('/');
+  std::string base =
+      (slash == std::string::npos) ? name : name.substr(slash + 1);
+  return strtoull(base.c_str(), nullptr, 10);
 }
 
 /* Byte-aligned writes without a sparse header */

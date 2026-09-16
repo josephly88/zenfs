@@ -48,6 +48,8 @@ class Zone {
   uint64_t wp_;
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<uint64_t> used_capacity_;
+  bool is_blob_zone_;
+  uint64_t blob_ybiz_;
 
   IOStatus Reset();
   IOStatus Finish();
@@ -74,6 +76,17 @@ class Zone {
   void EncodeJson(std::ostream &json_stream);
 
   inline IOStatus CheckRelease();
+
+  bool IsBlobZone() const { return is_blob_zone_; }
+  void SetBlobZone(bool v) { is_blob_zone_ = v; }
+  uint64_t GetBlobYBIZ() const { return blob_ybiz_; }
+  void NoteBlobFile(uint64_t file_number) {
+    if (file_number > blob_ybiz_) blob_ybiz_ = file_number;
+  }
+  void ClearBlobYBIZ() {
+    is_blob_zone_ = false;
+    blob_ybiz_ = 0;
+  }
 };
 
 class ZonedBlockDevice {
@@ -108,6 +121,8 @@ class ZonedBlockDevice {
   unsigned int max_nr_open_io_zones_;
 
   std::shared_ptr<ZenFSMetrics> metrics_;
+  bool baza_enabled_ = false;
+  std::atomic<uint64_t> blob_zc_copy_bytes_{0};
 
   void EncodeJsonZone(std::ostream &json_stream,
                       const std::vector<Zone *> zones);
@@ -126,7 +141,17 @@ class ZonedBlockDevice {
 
   IOStatus AllocateIOZone(Env::WriteLifeTimeHint file_lifetime, IOType io_type,
                           Zone **out_zone);
+  IOStatus AllocateBlobIOZone(Zone **out_zone);
   IOStatus AllocateMetaZone(Zone **out_meta_zone);
+
+  bool IsBazaEnabled() const { return baza_enabled_; }
+  uint64_t GetBlobZcCopyBytes() const {
+    return blob_zc_copy_bytes_.load(std::memory_order_relaxed);
+  }
+  void AddBlobZcCopyBytes(uint64_t n) {
+    blob_zc_copy_bytes_.fetch_add(n, std::memory_order_relaxed);
+  }
+  IOStatus GetMinFullBlobYBIZ(uint64_t *min_ybiz);
 
   uint64_t GetFreeSpace();
   uint64_t GetUsedSpace();
@@ -167,6 +192,7 @@ class ZonedBlockDevice {
 
   IOStatus TakeMigrateZone(Zone **out_zone, Env::WriteLifeTimeHint lifetime,
                            uint32_t min_capacity);
+  IOStatus TakeMigrateBlobZone(Zone **out_zone, uint32_t min_capacity);
 
  private:
   std::string ErrorToString(int err);
@@ -179,6 +205,7 @@ class ZonedBlockDevice {
                                 unsigned int *best_diff_out, Zone **zone_out,
                                 uint32_t min_capacity = 0);
   IOStatus AllocateEmptyZone(Zone **zone_out);
+  IOStatus GetBestOpenBlobZone(Zone **zone_out, uint32_t min_capacity = 0);
 };
 
 }  // namespace ROCKSDB_NAMESPACE
