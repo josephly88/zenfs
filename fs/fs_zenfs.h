@@ -451,6 +451,14 @@ class ZenFS : public FileSystemWrapper {
     return zbd_->GetMinFullBlobYBIZ(min_ybiz);
   }
 
+  IOStatus GetBlobCreationIndex(uint64_t file_number, uint64_t* index) override {
+    return zbd_->GetBlobCreationIndex(file_number, index);
+  }
+
+  // After recovery, assign dense creation indexes in file-number order and
+  // record each zone's YBIZ from the blob extents still on it.
+  void RebuildBlobCreationIndexes();
+
   uint64_t GetBlobZcCopyBytes() const override {
     return zbd_->GetBlobZcCopyBytes();
   }

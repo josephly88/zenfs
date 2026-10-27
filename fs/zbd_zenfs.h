@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <sstream>
+#include <unordered_map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -80,9 +81,9 @@ class Zone {
   bool IsBlobZone() const { return is_blob_zone_; }
   void SetBlobZone(bool v) { is_blob_zone_ = v; }
   uint64_t GetBlobYBIZ() const { return blob_ybiz_; }
-  void NoteBlobFile(uint64_t file_number) {
-    if (file_number > blob_ybiz_) blob_ybiz_ = file_number;
-  }
+  // file_number is the RocksDB blob file number. The zone records the dense
+  // creation index, and is marked as a blob zone.
+  void NoteBlobFile(uint64_t file_number);
   void ClearBlobYBIZ() {
     is_blob_zone_ = false;
     blob_ybiz_ = 0;
@@ -123,6 +124,10 @@ class ZonedBlockDevice {
   std::shared_ptr<ZenFSMetrics> metrics_;
   bool baza_enabled_ = false;
   std::atomic<uint64_t> blob_zc_copy_bytes_{0};
+  std::mutex blob_index_mtx_;
+  // RocksDB blob file number -> dense creation index (1, 2, 3, ...).
+  std::unordered_map<uint64_t, uint64_t> blob_file_index_;
+  uint64_t next_blob_index_ = 1;
 
   void EncodeJsonZone(std::ostream &json_stream,
                       const std::vector<Zone *> zones);
@@ -152,6 +157,8 @@ class ZonedBlockDevice {
     blob_zc_copy_bytes_.fetch_add(n, std::memory_order_relaxed);
   }
   IOStatus GetMinFullBlobYBIZ(uint64_t *min_ybiz);
+  IOStatus GetBlobCreationIndex(uint64_t file_number, uint64_t *index);
+  uint64_t AssignBlobCreationIndex(uint64_t file_number);
 
   uint64_t GetFreeSpace();
   uint64_t GetUsedSpace();

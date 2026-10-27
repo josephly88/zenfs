@@ -15,6 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -1410,6 +1411,8 @@ Status ZenFS::Mount(bool readonly) {
   s = Repair();
   if (!s.ok()) return s;
 
+  RebuildBlobCreationIndexes();
+
   if (readonly) {
     Info(logger_, "Mounting READ ONLY");
   } else {
@@ -1662,6 +1665,31 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
   }
 }
 
+void ZenFS::RebuildBlobCreationIndexes() {
+  if (!zbd_->IsBazaEnabled()) return;
+
+  std::vector<std::shared_ptr<ZoneFile>> blobs;
+  for (const auto& it : files_) {
+    if (it.second && it.second->IsBlobFile()) {
+      blobs.push_back(it.second);
+    }
+  }
+  std::sort(blobs.begin(), blobs.end(),
+            [](const std::shared_ptr<ZoneFile>& a,
+               const std::shared_ptr<ZoneFile>& b) {
+              return a->ParseBlobFileNumber() < b->ParseBlobFileNumber();
+            });
+  for (const auto& f : blobs) {
+    uint64_t file_number = f->ParseBlobFileNumber();
+    if (file_number == 0) continue;
+    for (ZoneExtent* ext : f->GetExtents()) {
+      if (ext != nullptr && ext->zone_ != nullptr) {
+        ext->zone_->NoteBlobFile(file_number);
+      }
+    }
+  }
+}
+
 void ZenFS::GCWorker() {
   while (run_gc_worker_) {
     usleep(1000 * 1000 * 10);
@@ -1823,6 +1851,9 @@ IOStatus ZenFS::MigrateFileExtents(
 
     if (ends_with(fname, ".blob")) {
       zbd_->AddBlobZcCopyBytes(ext->length_);
+      if (zbd_->IsBazaEnabled()) {
+        target_zone->NoteBlobFile(zfile->ParseBlobFileNumber());
+      }
     }
 
     zbd_->ReleaseMigrateZone(target_zone);

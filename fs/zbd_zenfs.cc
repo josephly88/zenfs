@@ -62,6 +62,14 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
     capacity_ = zbd_zone_capacity(z) - (zbd_zone_wp(z) - zbd_zone_start(z));
 }
 
+void Zone::NoteBlobFile(uint64_t file_number) {
+  if (file_number == 0 || zbd_ == nullptr) return;
+  uint64_t index = zbd_->AssignBlobCreationIndex(file_number);
+  if (index == 0) return;
+  is_blob_zone_ = true;
+  if (index > blob_ybiz_) blob_ybiz_ = index;
+}
+
 bool Zone::IsUsed() { return (used_capacity_ > 0); }
 uint64_t Zone::GetCapacityLeft() { return capacity_; }
 bool Zone::IsFull() { return (capacity_ == 0); }
@@ -752,6 +760,30 @@ IOStatus ZonedBlockDevice::GetBestOpenBlobZone(Zone **zone_out,
   }
 
   *zone_out = allocated_zone;
+  return IOStatus::OK();
+}
+
+uint64_t ZonedBlockDevice::AssignBlobCreationIndex(uint64_t file_number) {
+  if (file_number == 0) return 0;
+  std::lock_guard<std::mutex> lock(blob_index_mtx_);
+  auto it = blob_file_index_.find(file_number);
+  if (it != blob_file_index_.end()) return it->second;
+  uint64_t index = next_blob_index_++;
+  blob_file_index_.emplace(file_number, index);
+  return index;
+}
+
+IOStatus ZonedBlockDevice::GetBlobCreationIndex(uint64_t file_number,
+                                                uint64_t *index) {
+  if (index == nullptr) {
+    return IOStatus::InvalidArgument("GetBlobCreationIndex");
+  }
+  std::lock_guard<std::mutex> lock(blob_index_mtx_);
+  auto it = blob_file_index_.find(file_number);
+  if (it == blob_file_index_.end()) {
+    return IOStatus::NotFound("blob creation index");
+  }
+  *index = it->second;
   return IOStatus::OK();
 }
 
