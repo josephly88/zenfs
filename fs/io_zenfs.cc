@@ -361,9 +361,10 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
     r_sz = n;
 
   ptr = scratch;
+  size_t pread_sz = 0;
 
   while (read != r_sz) {
-    size_t pread_sz = r_sz - read;
+    pread_sz = r_sz - read;
 
     if ((pread_sz + r_off) > extent_end) pread_sz = extent_end - r_off;
 
@@ -416,7 +417,12 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
   }
 
   if (r < 0) {
-    s = IOStatus::IOError("pread error\n");
+    int err = errno;
+    std::string fname = linkfiles_.empty() ? std::string("?") : GetFilename();
+    s = IOStatus::IOError("pread error: " + std::string(strerror(err)) +
+                          " file " + fname + " off " + std::to_string(r_off) +
+                          " len " + std::to_string(pread_sz) +
+                          (direct ? " direct" : " buffered"));
     read = 0;
   }
 
