@@ -984,15 +984,20 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
   if (best_diff >= LIFETIME_DIFF_COULD_BE_WORSE) {
     bool got_token = GetActiveIOZoneTokenIfAvailable();
 
-    /* If we did not get a token, try to use the best match, even if the life
-     * time diff not good but a better choice than to finish an existing zone
-     * and open a new one
+    /* Equal lifetime (COULD_BE_WORSE) is good enough to append. Reuse the
+     * zone already held. If this attempt took an active token for a new
+     * zone, return it: the existing zone already owns one.
+     * A worse match still gives up the zone and opens a new one. When no
+     * active token is left, equal lifetime is also reused, which avoids
+     * finishing a zone just to open another.
      */
     if (allocated_zone != nullptr) {
-      if (!got_token && best_diff == LIFETIME_DIFF_COULD_BE_WORSE) {
-        Debug(logger_,
-              "Allocator: avoided a finish by relaxing lifetime diff "
-              "requirement\n");
+      if (best_diff == LIFETIME_DIFF_COULD_BE_WORSE) {
+        if (got_token) {
+          PutActiveIOZoneToken();
+          got_token = false;
+        }
+        Debug(logger_, "Allocator: reusing equal-lifetime zone\n");
       } else {
         s = allocated_zone->CheckRelease();
         if (!s.ok()) {
