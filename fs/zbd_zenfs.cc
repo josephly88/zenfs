@@ -547,6 +547,16 @@ IOStatus ZonedBlockDevice::ResetUnusedIOZones() {
   for (const auto z : io_zones) {
     if (z->Acquire()) {
       if (!z->IsEmpty() && !z->IsUsed()) {
+        /* The WAL is deleted on every memtable flush. Resetting its zone
+         * erases it while another zone is being written, which hard-locks
+         * this drive. Keep a partial short zone so the next log can append.
+         * A full unused short zone has nowhere to append, so it is reset.
+         */
+        if (z->lifetime_ == Env::WLTH_SHORT && !z->IsFull()) {
+          IOStatus release_status = z->CheckRelease();
+          if (!release_status.ok()) return release_status;
+          continue;
+        }
         bool full = z->IsFull();
         IOStatus reset_status = z->Reset();
         IOStatus release_status = z->CheckRelease();
@@ -702,8 +712,12 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
 
   for (const auto z : io_zones) {
     if (z->Acquire()) {
-      if ((z->used_capacity_ > 0) && !z->IsFull() && !z->IsBlobZone() &&
-          z->capacity_ >= min_capacity) {
+      /* A partial short zone kept after WAL deletion has no live bytes.
+       * It is still appendable at the write pointer. */
+      bool reusable_short_tail = z->lifetime_ == Env::WLTH_SHORT &&
+                                 !z->IsEmpty() && z->used_capacity_ == 0;
+      if ((z->used_capacity_ > 0 || reusable_short_tail) && !z->IsFull() &&
+          !z->IsBlobZone() && z->capacity_ >= min_capacity) {
         unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
         if (diff <= best_diff) {
           if (allocated_zone != nullptr) {
