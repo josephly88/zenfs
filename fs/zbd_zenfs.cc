@@ -500,7 +500,17 @@ unsigned int GetLifeTimeDiff(Env::WriteLifeTimeHint zone_lifetime,
     }
   }
 
-  if (zone_lifetime > file_lifetime) return zone_lifetime - file_lifetime;
+  /* A longer zone used to score (zone - file), which is under 50, so
+   * AllocateIOZone reused it before the equal-lifetime branch. That puts
+   * the WAL (WLTH_SHORT) on a medium L0/blob zone. On this drive that mix
+   * hard-locks the host. A short file therefore does not match a longer
+   * zone. Equal lifetime stays at 50 and is still reused. Medium and longer
+   * files may still fill a zone that outlives them.
+   */
+  if (zone_lifetime > file_lifetime) {
+    if (file_lifetime == Env::WLTH_SHORT) return LIFETIME_DIFF_NOT_GOOD;
+    return zone_lifetime - file_lifetime;
+  }
   if (zone_lifetime == file_lifetime) return LIFETIME_DIFF_COULD_BE_WORSE;
 
   return LIFETIME_DIFF_NOT_GOOD;
