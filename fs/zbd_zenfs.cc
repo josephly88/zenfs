@@ -711,17 +711,38 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
 IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
   IOStatus s;
   Zone *allocated_zone = nullptr;
+
+  unsigned int empty_seen = 0;
+  unsigned int empty_acquired = 0;
+  unsigned int busy_skipped = 0;
+  unsigned int nonempty_acquired = 0;
+
   for (const auto z : io_zones) {
     if (z->Acquire()) {
       if (z->IsEmpty()) {
+        empty_seen++;
+        empty_acquired++;
         allocated_zone = z;
         break;
       } else {
+        nonempty_acquired++;
         s = z->CheckRelease();
         if (!s.ok()) return s;
       }
+    } else {
+      busy_skipped++;
+      if (z->IsEmpty()) {
+        empty_seen++;
+      }
     }
   }
+
+  Info(logger_,
+       "AllocateEmptyZone: empty_seen=%u empty_acquired=%u "
+       "busy_skipped=%u nonempty_acquired=%u result=%s\n",
+       empty_seen, empty_acquired, busy_skipped, nonempty_acquired,
+       allocated_zone ? "success" : "null");
+
   *zone_out = allocated_zone;
   return IOStatus::OK();
 }
