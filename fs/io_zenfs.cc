@@ -433,6 +433,16 @@ void ZoneFile::PushExtent() {
   length = file_size_ - extent_filepos_;
   if (length == 0) return;
 
+  if (length > (active_zone_->wp_ - extent_start_)) {
+    Info(zbd_->GetLogger(),
+         "PUSH_EXTENT_MISMATCH file_size=%lu "
+         "extent_filepos=%lu length=%lu "
+         "zone_start=%lu wp=%lu extent_start=%lu "
+         "physical_delta=%lu capacity=%lu",
+         file_size_, extent_filepos_, length, active_zone_->start_,
+         active_zone_->wp_, extent_start_,
+         active_zone_->wp_ - extent_start_, active_zone_->capacity_);
+  }
   assert(length <= (active_zone_->wp_ - extent_start_));
   extents_.push_back(new ZoneExtent(extent_start_, length, active_zone_));
 

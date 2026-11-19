@@ -158,6 +158,7 @@ class ZonedBlockDevice {
   void SetZoneDeferredStatus(IOStatus status);
 
   std::shared_ptr<ZenFSMetrics> GetMetrics() { return metrics_; }
+  std::shared_ptr<Logger> GetLogger() { return logger_; }
 
   void GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot);
 
