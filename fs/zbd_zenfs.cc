@@ -521,17 +521,36 @@ IOStatus ZonedBlockDevice::AllocateMetaZone(Zone **out_meta_zone) {
 IOStatus ZonedBlockDevice::ResetUnusedIOZones() {
   for (const auto z : io_zones) {
     if (z->Acquire()) {
-      if (!z->IsEmpty() && !z->IsUsed()) {
+      uint64_t used = z->used_capacity_.load();
+
+      if (!z->IsEmpty() && used == 0) {
+        Info(logger_,
+             "RESET_PROBE RESET start=0x%lx wp=0x%lx used=%lu",
+             z->start_, z->wp_, used);
+
         bool full = z->IsFull();
         IOStatus reset_status = z->Reset();
         IOStatus release_status = z->CheckRelease();
-        if (!reset_status.ok()) return reset_status;
+
+        if (!reset_status.ok()) {
+          Error(logger_, "RESET_PROBE RESET_FAILED start=0x%lx", z->start_);
+          return reset_status;
+        }
+
+        Info(logger_, "RESET_PROBE RESET_OK start=0x%lx", z->start_);
+
         if (!release_status.ok()) return release_status;
         if (!full) PutActiveIOZoneToken();
       } else {
+        Info(logger_,
+             "RESET_PROBE %s start=0x%lx wp=0x%lx used=%lu",
+             z->IsEmpty() ? "EMPTY" : "USED", z->start_, z->wp_, used);
+
         IOStatus release_status = z->CheckRelease();
         if (!release_status.ok()) return release_status;
       }
+    } else {
+      Info(logger_, "RESET_PROBE BUSY start=0x%lx", z->start_);
     }
   }
   return IOStatus::OK();
