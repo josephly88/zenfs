@@ -750,9 +750,7 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
       }
     } else {
       busy_skipped++;
-      if (z->IsEmpty()) {
-        empty_seen++;
-      }
+      Info(logger_, "ALLOC_BUSY start=0x%lx", z->start_);
     }
   }
 
