@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <libzbd/zbd.h>
 #include <linux/blkzoned.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -440,6 +441,19 @@ void ZoneFile::PushExtent() {
   length = file_size_ - extent_filepos_;
   if (length == 0) return;
 
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
+  if (length > (active_zone_->wp_ - extent_start_)) {
+    fprintf(stderr,
+            "PUSH_EXTENT_MISMATCH file_size=%lu "
+            "extent_filepos=%lu length=%lu "
+            "zone_start=%lu wp=%lu extent_start=%lu "
+            "physical_delta=%lu capacity=%lu\n",
+            file_size_, extent_filepos_, length, active_zone_->start_,
+            active_zone_->wp_, extent_start_,
+            active_zone_->wp_ - extent_start_, active_zone_->capacity_);
+    fflush(stderr);
+  }
+#endif
   assert(length <= (active_zone_->wp_ - extent_start_));
   extents_.push_back(new ZoneExtent(extent_start_, length, active_zone_));
 

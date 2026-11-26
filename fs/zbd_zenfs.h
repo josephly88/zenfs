@@ -6,6 +6,9 @@
 
 #pragma once
 
+/* Set to 0 to compile out investigation-specific zone diagnostics. */
+#define ZENFS_ENABLE_ZONE_DIAGNOSTICS 0
+
 #include <cstdint>
 #if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
