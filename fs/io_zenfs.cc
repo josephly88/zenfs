@@ -434,6 +434,7 @@ void ZoneFile::PushExtent() {
   length = file_size_ - extent_filepos_;
   if (length == 0) return;
 
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
   if (length > (active_zone_->wp_ - extent_start_)) {
     fprintf(stderr,
             "PUSH_EXTENT_MISMATCH file_size=%lu "
@@ -445,6 +446,7 @@ void ZoneFile::PushExtent() {
             active_zone_->wp_ - extent_start_, active_zone_->capacity_);
     fflush(stderr);
   }
+#endif
   assert(length <= (active_zone_->wp_ - extent_start_));
   extents_.push_back(new ZoneExtent(extent_start_, length, active_zone_));
 

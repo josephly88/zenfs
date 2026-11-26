@@ -524,33 +524,43 @@ IOStatus ZonedBlockDevice::ResetUnusedIOZones() {
       uint64_t used = z->used_capacity_.load();
 
       if (!z->IsEmpty() && used == 0) {
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
         Info(logger_,
              "RESET_PROBE RESET start=0x%lx wp=0x%lx used=%lu",
              z->start_, z->wp_, used);
+#endif
 
         bool full = z->IsFull();
         IOStatus reset_status = z->Reset();
         IOStatus release_status = z->CheckRelease();
 
         if (!reset_status.ok()) {
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
           Error(logger_, "RESET_PROBE RESET_FAILED start=0x%lx", z->start_);
+#endif
           return reset_status;
         }
 
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
         Info(logger_, "RESET_PROBE RESET_OK start=0x%lx", z->start_);
+#endif
 
         if (!release_status.ok()) return release_status;
         if (!full) PutActiveIOZoneToken();
       } else {
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
         Info(logger_,
              "RESET_PROBE %s start=0x%lx wp=0x%lx used=%lu",
              z->IsEmpty() ? "EMPTY" : "USED", z->start_, z->wp_, used);
+#endif
 
         IOStatus release_status = z->CheckRelease();
         if (!release_status.ok()) return release_status;
       }
     } else {
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
       Info(logger_, "RESET_PROBE BUSY start=0x%lx", z->start_);
+#endif
     }
   }
   return IOStatus::OK();
@@ -731,29 +741,38 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
   IOStatus s;
   Zone *allocated_zone = nullptr;
 
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
   unsigned int empty_seen = 0;
   unsigned int empty_acquired = 0;
   unsigned int busy_skipped = 0;
   unsigned int nonempty_acquired = 0;
+#endif
 
   for (const auto z : io_zones) {
     if (z->Acquire()) {
       if (z->IsEmpty()) {
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
         empty_seen++;
         empty_acquired++;
+#endif
         allocated_zone = z;
         break;
       } else {
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
         nonempty_acquired++;
+#endif
         s = z->CheckRelease();
         if (!s.ok()) return s;
       }
     } else {
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
       busy_skipped++;
       Info(logger_, "ALLOC_BUSY start=0x%lx", z->start_);
+#endif
     }
   }
 
+#if ZENFS_ENABLE_ZONE_DIAGNOSTICS
   Info(logger_,
        "AllocateEmptyZone: empty_seen=%u empty_acquired=%u "
        "busy_skipped=%u nonempty_acquired=%u result=%s\n",
@@ -774,6 +793,7 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
     }
     Info(logger_, "ZONE_SNAPSHOT_END");
   }
+#endif
 
   *zone_out = allocated_zone;
   return IOStatus::OK();
