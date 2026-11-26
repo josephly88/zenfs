@@ -760,6 +760,21 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
        empty_seen, empty_acquired, busy_skipped, nonempty_acquired,
        allocated_zone ? "success" : "null");
 
+  if (allocated_zone == nullptr) {
+    /* Best-effort host-side snapshot at EMPTY-zone miss. Per-zone fields
+     * are not taken under a global lock, so records may tear across
+     * concurrent writers. Do not Acquire/Release; IsBusy() is a load. */
+    Info(logger_, "ZONE_SNAPSHOT_BEGIN count=%zu", io_zones.size());
+    for (const auto z : io_zones) {
+      Info(logger_,
+           "ZONE_SNAPSHOT start=0x%lx wp=0x%lx capacity=%lu "
+           "max_capacity=%lu used_capacity=%lu busy=%d",
+           z->start_, z->wp_, z->capacity_, z->max_capacity_,
+           z->used_capacity_.load(), z->IsBusy() ? 1 : 0);
+    }
+    Info(logger_, "ZONE_SNAPSHOT_END");
+  }
+
   *zone_out = allocated_zone;
   return IOStatus::OK();
 }
