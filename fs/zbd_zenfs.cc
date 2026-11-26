@@ -875,6 +875,15 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
         new_zone = true;
       } else {
         PutActiveIOZoneToken();
+
+        static std::atomic<uint64_t> fallback_count{0};
+        uint64_t count =
+            fallback_count.fetch_add(1, std::memory_order_relaxed) + 1;
+
+        if (count == 1 || count % 1000 == 0) {
+          Info(logger_, "ZONE_FALLBACK count=%lu", count);
+        }
+
         s = GetBestOpenZoneMatch(file_lifetime, &best_diff, &allocated_zone);
         if (!s.ok()) {
           PutOpenIOZoneToken();
