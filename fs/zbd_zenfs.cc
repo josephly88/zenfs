@@ -18,6 +18,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -877,14 +878,36 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
         PutActiveIOZoneToken();
 
         static std::atomic<uint64_t> fallback_count{0};
+        static std::atomic<uint64_t> fallback_total_ns{0};
+        static std::atomic<uint64_t> fallback_max_ns{0};
+
+        auto t0 = std::chrono::steady_clock::now();
+        s = GetBestOpenZoneMatch(file_lifetime, &best_diff, &allocated_zone);
+        auto t1 = std::chrono::steady_clock::now();
+        uint64_t elapsed_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0)
+                .count();
+
         uint64_t count =
             fallback_count.fetch_add(1, std::memory_order_relaxed) + 1;
-
-        if (count == 1 || count % 1000 == 0) {
-          Info(logger_, "ZONE_FALLBACK count=%lu", count);
+        uint64_t total_ns =
+            fallback_total_ns.fetch_add(elapsed_ns, std::memory_order_relaxed) +
+            elapsed_ns;
+        uint64_t prev_max = fallback_max_ns.load(std::memory_order_relaxed);
+        while (elapsed_ns > prev_max &&
+               !fallback_max_ns.compare_exchange_weak(
+                   prev_max, elapsed_ns, std::memory_order_relaxed)) {
         }
 
-        s = GetBestOpenZoneMatch(file_lifetime, &best_diff, &allocated_zone);
+        if (count == 1 || count % 1000 == 0) {
+          uint64_t avg_us = (total_ns / count) / 1000;
+          uint64_t max_us =
+              fallback_max_ns.load(std::memory_order_relaxed) / 1000;
+          Info(logger_, "ZONE_FALLBACK_TIMING count=%lu avg_us=%lu max_us=%lu",
+               (unsigned long)count, (unsigned long)avg_us,
+               (unsigned long)max_us);
+        }
+
         if (!s.ok()) {
           PutOpenIOZoneToken();
           return s;
