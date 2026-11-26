@@ -573,6 +573,7 @@ IOStatus ZonedBlockDevice::ResetUnusedIOZones() {
         if (!full) PutActiveIOZoneToken();
       } else {
 #if ZENFS_ENABLE_ZONE_DIAGNOSTICS
+        uint64_t used = z->used_capacity_.load();
         Info(logger_,
              "RESET_PROBE %s start=0x%lx wp=0x%lx used=%lu",
              z->IsEmpty() ? "EMPTY" : "USED", z->start_, z->wp_, used);
