@@ -875,6 +875,11 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
         new_zone = true;
       } else {
         PutActiveIOZoneToken();
+        s = GetBestOpenZoneMatch(file_lifetime, &best_diff, &allocated_zone);
+        if (!s.ok()) {
+          PutOpenIOZoneToken();
+          return s;
+        }
       }
     }
   }
